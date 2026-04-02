@@ -48,8 +48,14 @@ data_clean <- data_clean %>%
          host_response_time != "",
          host_is_superhost != "")
 
+# ////////////////////////////////////////
+# //Linear Regression Models
+# ////////////////////////////////////////
+
+## Base Model
 base_model <- lm(price ~ bathrooms + bedrooms + room_type, data = data_clean)
 summary(base_model)
 
+## Model D
 model_d <- lm(price ~ bathrooms + bedrooms + room_type + instant_bookable + host_is_superhost, data = data_clean)
 summary(model_d)
