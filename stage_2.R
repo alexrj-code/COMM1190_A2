@@ -9,53 +9,153 @@
 # Purpose: Compare regression models & create tree. 
 # =========================================================
 
-library("readr")
-library(flextable)
-library(officer)
-library(dplyr)
-library(gt)
-library(ggplot2)
 library(tidyverse)
-library()
+library(naniar)
+library(janitor)
 
 # ////////////////////////////////////////
 # // Grabbing data and cleaning dataset
 # ////////////////////////////////////////
-data <- read.csv("https://raw.githubusercontent.com/dat-analytics/assess1_t1_2026/refs/heads/main/z5745186_z5745186-Assessment1Data.csv", encoding="UTF-8")
+dat <- read.csv("https://raw.githubusercontent.com/dat-analytics/assess1_t1_2026/refs/heads/main/z5745186_z5745186-Assessment1Data.csv", encoding="UTF-8")
 
-data_clean <- data %>% select(price, bathrooms, bedrooms, room_type, host_response_time, host_is_superhost, number_of_reviews_l30d, maximum_nights, instant_bookable)
-data_clean <- data_clean %>% drop_na()
-View(data_clean)
+# ============================================================
+# STEP 1: Remove unwanted columns
+# ============================================================
+dat_clean <- dat %>%
+  select(-Property_ID, -host_since, -host_identity_verified, 
+         -latitude, -longitude, -minimum_nights)
 
-data_clean$price <- as.numeric(gsub("[$,]", "", data_clean$price))
+cat("Original rows:", nrow(dat), "\n")
+cat("Columns after removal:", ncol(dat_clean), "\n")
+cat("Remaining columns:", paste(colnames(dat_clean), collapse=", "), "\n\n")
 
-Q1 <- quantile(data_clean$price, 0.25, na.rm = TRUE)
-Q3 <- quantile(data_clean$price, 0.75, na.rm = TRUE)
+# ============================================================
+# STEP 2: Clean strings and remove NA/"N/A"/empty values
+# ============================================================
+
+dat_clean <- dat_clean %>%
+  mutate(price = parse_number(price)) %>%
+  replace_with_na_all(condition = ~.x %in% c("N/A", "", " ")) %>%
+  drop_na()
+
+rows_before <- nrow(dat_clean)
+dat_clean <- dat_clean %>% drop_na()
+cat(sprintf("Removed %d rows, %d remaining\n", rows_before - nrow(dat_clean), nrow(dat_clean)))
+
+# ============================================================
+# STEP 3: Remove price outliers using IQR method (WITH OUTLIER BOUNDARIES FROM STAGE 1)
+# ============================================================
+
+dat_price_bound <- dat %>% 
+  select(price, bathrooms, bedrooms, room_type, host_response_time, 
+         host_is_superhost, number_of_reviews_l30d, maximum_nights, instant_bookable) %>%
+  drop_na() %>%
+  mutate(price = as.numeric(gsub("[$,]", "", price)))
+
+Q1 <- quantile(dat_price_bound$price, 0.25, na.rm = TRUE)
+Q3 <- quantile(dat_price_bound$price, 0.75, na.rm = TRUE)
 IQR_val <- Q3 - Q1
-fence <- Q3 + 1.5 * IQR_val
-
-cat("Upper fence:", fence, "\n")
-cat("Rows retained:", sum(data_clean$price <= fence, na.rm = TRUE), "\n")
-cat("Rows removed:", sum(data_clean$price > fence, na.rm = TRUE), "\n")
-
+upper_fence <- Q3 + 1.5 * IQR_val
 lower_fence <- Q1 - 1.5 * IQR_val
-cat("Lower fence:", lower_fence, "\n")
-cat("Rows removed below fence:", sum(data_clean$price < lower_fence, na.rm = TRUE), "\n")
 
-data_clean <- data_clean %>% filter(price <= fence & price >= lower_fence)
-data_clean <- data_clean %>%
-  filter(host_response_time != "N/A",
-         host_response_time != "",
-         host_is_superhost != "")
+rows_before_outlier <- nrow(dat_clean)
+dat_clean <- dat_clean %>% filter(price >= lower_fence & price <= upper_fence)
+cat("Price outliers removed:", rows_before_outlier - nrow(dat_clean), "\n")
+cat("Final rows remaining:", nrow(dat_clean), "\n\n")
 
-# ////////////////////////////////////////
-# //Linear Regression Models
-# ////////////////////////////////////////
+# ============================================================
+# CREATE SYDNEY REGION COLUMN
+# ============================================================
 
-## Base Model
-base_model <- lm(price ~ bathrooms + bedrooms + room_type, data = data_clean)
-summary(base_model)
+region_lookup <- c(
+  # CBD / Inner City
+  "Sydney" = "CBD / Inner City",
+  
+  # Inner West
+  "Leichhardt" = "Inner West",
+  "Marrickville" = "Inner West",
+  "Canada Bay" = "Inner West",
+  "Burwood" = "Inner West",
+  "Strathfield" = "Inner West",
+  "Ashfield" = "Inner West",
+  
+  # Eastern Suburbs
+  "Waverley" = "Eastern Suburbs",
+  "Woollahra" = "Eastern Suburbs",
+  "Randwick" = "Eastern Suburbs",
+  
+  # North Shore (merged)
+  "Mosman" = "North Shore",
+  "North Sydney" = "North Shore",
+  "Lane Cove" = "North Shore",
+  "Hunters Hill" = "North Shore",
+  "Ku-Ring-Gai" = "North Shore",
+  "Hornsby" = "North Shore",
+  "Ryde" = "North Shore",
+  "Willoughby" = "North Shore",
+  
+  # Northern Beaches
+  "Manly" = "Northern Beaches",
+  "Pittwater" = "Northern Beaches",
+  "Warringah" = "Northern Beaches",
+  
+  # Western Sydney
+  "Parramatta" = "Western Sydney",
+  "Blacktown" = "Western Sydney",
+  "Auburn" = "Western Sydney",
+  "Holroyd" = "Western Sydney",
+  "The Hills Shire" = "Western Sydney",
+  "Penrith" = "Western Sydney",
+  
+  # South West Sydney
+  "Liverpool" = "South West Sydney",
+  "Fairfield" = "South West Sydney",
+  "Bankstown" = "South West Sydney",
+  "Camden" = "South West Sydney",
+  "Campbelltown" = "South West Sydney",
+  "Canterbury" = "South West Sydney",
+  
+  # South / Sutherland & St George
+  "Sutherland Shire" = "South / Sutherland & St George",
+  "Hurstville" = "South / Sutherland & St George",
+  "Rockdale" = "South / Sutherland & St George",
+  "City Of Kogarah" = "South / Sutherland & St George",
+  "Botany Bay" = "South / Sutherland & St George"
+)
 
-## Model D
-model_d <- lm(price ~ bathrooms + bedrooms + room_type + instant_bookable + host_is_superhost, data = data_clean)
-summary(model_d)
+# Create the new column
+dat_clean$sydney_region <- region_lookup[dat_clean$neighbourhood_cleansed]
+
+# ============================================================
+# CHECK EVERY ENTRY HAS A REGION
+# ============================================================
+unmatched <- dat_clean %>%
+  filter(is.na(sydney_region)) %>%
+  select(neighbourhood_cleansed) %>%
+  distinct()
+
+if (nrow(unmatched) == 0) {
+  cat("All entries successfully mapped to a Sydney region.\n")
+} else {
+  cat("WARNING:", nrow(unmatched), "neighbourhood(s) could not be matched:\n")
+  print(unmatched)
+}
+
+# Summary of listings per region
+cat("\nListings per region:\n")
+print(table(dat_clean$sydney_region))
+
+# Drop original neighbourhood column
+dat_clean <- dat_clean %>% select(-neighbourhood_cleansed)
+
+# ============================================================
+# STEP 4: Fit linear regression with all remaining variables
+# ============================================================
+full_model <- lm(price ~ ., data = dat_clean)
+summary(full_model)
+
+# ============================================================
+# BACKWARD ELIMINATION TO FIND BEST LINEAR REGRESSION MODEL
+# ============================================================
+
+# To be continued
