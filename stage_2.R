@@ -11,6 +11,7 @@
 
 library(tidyverse)
 library(naniar)
+library(janitor)
 
 # ////////////////////////////////////////
 # // Grabbing data and cleaning dataset
@@ -32,38 +33,120 @@ cat("Remaining columns:", paste(colnames(dat_clean), collapse=", "), "\n\n")
 # STEP 2: Clean strings and remove NA/"N/A"/empty values
 # ============================================================
 
-# Clean price column (remove $ and commas)
-dat_clean$price <- as.numeric(gsub("[$,]", "", dat_clean$price))
-
-# Replace "N/A" strings and empty strings with real NAs across all columns
 dat_clean <- dat_clean %>%
-  replace_with_na_all(condition = ~.x %in% c("N/A", "", " "))
+  mutate(price = parse_number(price)) %>%
+  replace_with_na_all(condition = ~.x %in% c("N/A", "", " ")) %>%
+  drop_na()
 
-rows_before_drop <- nrow(dat_clean)
-
-# Listwise delete all rows with any NA
+rows_before <- nrow(dat_clean)
 dat_clean <- dat_clean %>% drop_na()
-
-rows_after_drop <- nrow(dat_clean)
-
-cat("Rows before listwise deletion:", rows_before_drop, "\n")
-cat("Rows removed:", rows_before_drop - rows_after_drop, "\n")
-cat("Rows remaining:", rows_after_drop, "\n\n")
+cat(sprintf("Removed %d rows, %d remaining\n", rows_before - nrow(dat_clean), nrow(dat_clean)))
 
 # ============================================================
-# STEP 3: Remove price outliers using IQR method
+# STEP 3: Remove price outliers using IQR method (WITH OUTLIER BOUNDARIES FROM STAGE 1)
 # ============================================================
-Q1 <- quantile(dat_clean$price, 0.25)
-Q3 <- quantile(dat_clean$price, 0.75)
+
+dat_price_bound <- dat %>% 
+  select(price, bathrooms, bedrooms, room_type, host_response_time, 
+         host_is_superhost, number_of_reviews_l30d, maximum_nights, instant_bookable) %>%
+  drop_na() %>%
+  mutate(price = as.numeric(gsub("[$,]", "", price)))
+
+Q1 <- quantile(dat_price_bound$price, 0.25, na.rm = TRUE)
+Q3 <- quantile(dat_price_bound$price, 0.75, na.rm = TRUE)
 IQR_val <- Q3 - Q1
 upper_fence <- Q3 + 1.5 * IQR_val
 lower_fence <- Q1 - 1.5 * IQR_val
 
 rows_before_outlier <- nrow(dat_clean)
-dat_clean <- dat_clean %>% filter(price <= upper_fence & price >= lower_fence)
-
+dat_clean <- dat_clean %>% filter(price >= lower_fence & price <= upper_fence)
 cat("Price outliers removed:", rows_before_outlier - nrow(dat_clean), "\n")
 cat("Final rows remaining:", nrow(dat_clean), "\n\n")
+
+# ============================================================
+# CREATE SYDNEY REGION COLUMN
+# ============================================================
+
+region_lookup <- c(
+  # CBD / Inner City
+  "Sydney" = "CBD / Inner City",
+  
+  # Inner West
+  "Leichhardt" = "Inner West",
+  "Marrickville" = "Inner West",
+  "Canada Bay" = "Inner West",
+  "Burwood" = "Inner West",
+  "Strathfield" = "Inner West",
+  "Ashfield" = "Inner West",
+  
+  # Eastern Suburbs
+  "Waverley" = "Eastern Suburbs",
+  "Woollahra" = "Eastern Suburbs",
+  "Randwick" = "Eastern Suburbs",
+  
+  # North Shore (merged)
+  "Mosman" = "North Shore",
+  "North Sydney" = "North Shore",
+  "Lane Cove" = "North Shore",
+  "Hunters Hill" = "North Shore",
+  "Ku-Ring-Gai" = "North Shore",
+  "Hornsby" = "North Shore",
+  "Ryde" = "North Shore",
+  "Willoughby" = "North Shore",
+  
+  # Northern Beaches
+  "Manly" = "Northern Beaches",
+  "Pittwater" = "Northern Beaches",
+  "Warringah" = "Northern Beaches",
+  
+  # Western Sydney
+  "Parramatta" = "Western Sydney",
+  "Blacktown" = "Western Sydney",
+  "Auburn" = "Western Sydney",
+  "Holroyd" = "Western Sydney",
+  "The Hills Shire" = "Western Sydney",
+  "Penrith" = "Western Sydney",
+  
+  # South West Sydney
+  "Liverpool" = "South West Sydney",
+  "Fairfield" = "South West Sydney",
+  "Bankstown" = "South West Sydney",
+  "Camden" = "South West Sydney",
+  "Campbelltown" = "South West Sydney",
+  "Canterbury" = "South West Sydney",
+  
+  # South / Sutherland & St George
+  "Sutherland Shire" = "South / Sutherland & St George",
+  "Hurstville" = "South / Sutherland & St George",
+  "Rockdale" = "South / Sutherland & St George",
+  "City Of Kogarah" = "South / Sutherland & St George",
+  "Botany Bay" = "South / Sutherland & St George"
+)
+
+# Create the new column
+dat_clean$sydney_region <- region_lookup[dat_clean$neighbourhood_cleansed]
+
+# ============================================================
+# CHECK EVERY ENTRY HAS A REGION
+# ============================================================
+unmatched <- dat_clean %>%
+  filter(is.na(sydney_region)) %>%
+  select(neighbourhood_cleansed) %>%
+  distinct()
+
+if (nrow(unmatched) == 0) {
+  cat("All entries successfully mapped to a Sydney region.\n")
+} else {
+  cat("WARNING:", nrow(unmatched), "neighbourhood(s) could not be matched:\n")
+  print(unmatched)
+}
+
+# Summary of listings per region
+cat("\nListings per region:\n")
+print(table(dat_clean$sydney_region))
+
+# Drop original neighbourhood column
+dat_clean <- dat_clean %>% select(-neighbourhood_cleansed)
 
 # ============================================================
 # STEP 4: Fit linear regression with all remaining variables
@@ -72,6 +155,7 @@ full_model <- lm(price ~ ., data = dat_clean)
 summary(full_model)
 
 # ============================================================
-# BACKWARD ELIMINATION
+# BACKWARD ELIMINATION TO FIND BEST LINEAR REGRESSION MODEL
 # ============================================================
 
+# To be continued
