@@ -157,5 +157,81 @@ summary(full_model)
 # ============================================================
 # BACKWARD ELIMINATION TO FIND BEST LINEAR REGRESSION MODEL
 # ============================================================
+current_data <- dat_clean
+current_model <- lm(price ~ ., data = current_data)
+current_adj_r2 <- summary(current_model)$adj.r.squared
+iteration <- 0
 
-# To be continued
+cat("Starting Adjusted R²:", round(current_adj_r2, 6), "\n")
+cat("Starting variables:", paste(names(current_data)[names(current_data) != "price"], collapse=", "), "\n\n")
+
+repeat {
+  current_model <- lm(price ~ ., data = current_data)
+  coef_table <- summary(current_model)$coefficients
+  coef_table <- coef_table[rownames(coef_table) != "(Intercept)", , drop = FALSE]
+  coef_table <- coef_table[order(-coef_table[, "Pr(>|t|)"]), , drop = FALSE]
+  
+  candidate_vars <- names(current_data)[names(current_data) != "price"]
+  removed <- FALSE
+  
+  for (i in 1:nrow(coef_table)) {
+    max_pval <- coef_table[i, "Pr(>|t|)"]
+    
+    if (max_pval < 0.05) {
+      cat("All remaining variables significant (p < 0.05). Stopping.\n")
+      removed <- NA
+      break
+    }
+    
+    worst_coef <- rownames(coef_table)[i]
+    
+    matched_var <- candidate_vars[sapply(candidate_vars, function(v) startsWith(worst_coef, v))]
+    if (length(matched_var) > 1) matched_var <- matched_var[which.max(nchar(matched_var))]
+    if (length(matched_var) == 0) next
+    
+    all_dummies_for_var <- rownames(coef_table)[sapply(rownames(coef_table), function(r) startsWith(r, matched_var))]
+    
+    if (length(all_dummies_for_var) > 1) {
+      any_significant <- any(coef_table[all_dummies_for_var, "Pr(>|t|)"] < 0.05)
+      if (any_significant) {
+        cat(sprintf("Skipping %s — has insignificant dummy (%s) but other dummies are significant\n",
+                    matched_var, worst_coef))
+        next
+      }
+    }
+    
+    new_data <- current_data %>% select(-all_of(matched_var))
+    new_model <- lm(price ~ ., data = new_data)
+    new_adj_r2 <- summary(new_model)$adj.r.squared
+    
+    iteration <- iteration + 1
+    cat(sprintf("Iteration %d | Removed: %-35s | p-value: %.5f | Adj R²: %.6f %s\n",
+                iteration, matched_var, max_pval, new_adj_r2,
+                ifelse(new_adj_r2 >= current_adj_r2, "", "(decreased — reverting)")))
+    
+    # Stop if Adjusted R² decreases at all
+    if (new_adj_r2 < current_adj_r2) {
+      cat("\nRemoving", matched_var, "worsens the model. Keeping it. Best model found.\n")
+      removed <- NA
+      break
+    }
+    
+    current_data <- new_data
+    current_adj_r2 <- new_adj_r2
+    removed <- TRUE
+    break
+  }
+  
+  if (is.na(removed) || !removed) break
+}
+
+best_model <- lm(price ~ ., data = current_data)
+cat("\n--- FINAL MODEL ---\n")
+cat("Variables kept:", paste(names(current_data)[names(current_data) != "price"], collapse=", "), "\n\n")
+summary(best_model)
+
+## I don't trust the loop - Manually checking 
+test_model <- lm(price ~ . - host_response_time - instant_bookable, data = current_data)
+summary(test_model)
+
+## ok the loop seems to work
