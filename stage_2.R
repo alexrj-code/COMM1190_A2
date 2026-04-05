@@ -148,14 +148,132 @@ print(table(dat_clean$sydney_region))
 # Drop original neighbourhood column
 dat_clean <- dat_clean %>% select(-neighbourhood_cleansed)
 
+
+# ============================================================
+# TRAIN/TEST SPLIT
+# ============================================================
+set.seed(123)
+split <- sample(c(TRUE, FALSE), nrow(dat_clean), replace=TRUE, prob=c(0.8,0.2))
+train_data <- dat_clean[split, ]
+test_data  <- dat_clean[!split, ]
+
+cat("Training rows:", nrow(train_data), "\n")
+cat("Test rows:", nrow(test_data), "\n\n")
+
 # ============================================================
 # STEP 4: Fit linear regression with all remaining variables
 # ============================================================
-full_model <- lm(price ~ ., data = dat_clean)
+full_model <- lm(price ~ ., data = train_data)  
 summary(full_model)
 
 # ============================================================
 # BACKWARD ELIMINATION TO FIND BEST LINEAR REGRESSION MODEL
 # ============================================================
+current_data <- train_data  # <-- changed
+current_model <- lm(price ~ ., data = current_data)
+current_adj_r2 <- summary(current_model)$adj.r.squared
+iteration <- 0
 
-# To be continued
+cat("Starting Adjusted R²:", round(current_adj_r2, 6), "\n")
+cat("Starting variables:", paste(names(current_data)[names(current_data) != "price"], collapse=", "), "\n\n")
+
+repeat {
+  current_model <- lm(price ~ ., data = current_data)
+  
+  ## DELETE THIS
+  summary(current_model)
+  ##
+  coef_table <- summary(current_model)$coefficients
+  coef_table <- coef_table[rownames(coef_table) != "(Intercept)", , drop = FALSE]
+  coef_table <- coef_table[order(-coef_table[, "Pr(>|t|)"]), , drop = FALSE]
+  
+  candidate_vars <- names(current_data)[names(current_data) != "price"]
+  removed <- FALSE
+  
+  for (i in 1:nrow(coef_table)) {
+    max_pval <- coef_table[i, "Pr(>|t|)"]
+    
+    if (max_pval < 0.05) {
+      cat("All remaining variables significant (p < 0.05). Stopping.\n")
+      removed <- NA
+      break
+    }
+    
+    worst_coef <- rownames(coef_table)[i]
+    
+    matched_var <- candidate_vars[sapply(candidate_vars, function(v) startsWith(worst_coef, v))]
+    if (length(matched_var) > 1) matched_var <- matched_var[which.max(nchar(matched_var))]
+    if (length(matched_var) == 0) next
+    
+    all_dummies_for_var <- rownames(coef_table)[sapply(rownames(coef_table), function(r) startsWith(r, matched_var))]
+    
+    if (length(all_dummies_for_var) > 1) {
+      any_significant <- any(coef_table[all_dummies_for_var, "Pr(>|t|)"] < 0.05)
+      if (any_significant) {
+        cat(sprintf("Skipping %s — has insignificant dummy (%s) but other dummies are significant\n",
+                    matched_var, worst_coef))
+        next
+      }
+    }
+    
+    new_data <- current_data %>% select(-all_of(matched_var))
+    new_model <- lm(price ~ ., data = new_data)
+    new_adj_r2 <- summary(new_model)$adj.r.squared
+    
+    iteration <- iteration + 1
+    cat(sprintf("Iteration %d | Removed: %-35s | p-value: %.5f | Adj R²: %.6f %s\n",
+                iteration, matched_var, max_pval, new_adj_r2,
+                ifelse(new_adj_r2 >= current_adj_r2, "", "(decreased — reverting)")))
+    
+    # Stop if Adjusted R² decreases at all
+    if (new_adj_r2 < current_adj_r2) {
+      cat("\nRemoving", matched_var, "worsens the model. Keeping it. Best model found.\n")
+      removed <- NA
+      break
+    }
+    
+    current_data <- new_data
+    current_adj_r2 <- new_adj_r2
+    removed <- TRUE
+    break
+  }
+  
+  if (is.na(removed) || !removed) break
+}
+
+best_model <- lm(price ~ ., data = current_data)
+cat("\n--- FINAL MODEL ---\n")
+cat("Variables kept:", paste(names(current_data)[names(current_data) != "price"], collapse=", "), "\n\n")
+summary(best_model)
+
+## I don't trust the loop - Manually checking 
+#test_model <- lm(price ~ . - host_response_time - instant_bookable, data = current_data)
+#summary(test_model)
+
+## ok the loop seems to work
+
+# ============================================================
+# Evaluate the model
+# ============================================================
+
+## Eval 1: MSE
+predictions <- predict(best_model, newdata = test_data)
+test_mse <- mean((test_data$price - predictions)^2)
+test_rmse <- sqrt(test_mse)
+cat("Test RMSE: $", round(test_rmse, 2), "\n")
+
+## Eval2: R^2 (on unseen data)
+ss_res <- sum((test_data$price - predictions)^2)
+ss_tot <- sum((test_data$price - mean(test_data$price))^2)
+test_r2 <- 1 - ss_res/ss_tot
+cat("Test R²:", round(test_r2, 4), "\n")
+
+## Eval3: Actual vs predicted plot
+ggplot(data.frame(actual=test_data$price, predicted=predictions), 
+       aes(x=actual, y=predicted)) +
+  geom_point(alpha=0.3) +
+  geom_abline(slope=1, intercept=0, color="red", linetype="dashed") +
+  labs(title="Actual vs Predicted Price",
+       x="Actual Price ($)", y="Predicted Price ($)") +
+  theme_minimal() +
+  theme(panel.grid.minor = element_blank())
