@@ -307,3 +307,11 @@ ggplot(data.frame(actual=test_data$price, predicted=predictions),
   theme(panel.grid.minor = element_blank())
 
 
+# ==============================================================================
+# ==============================================================================
+# Author: Maeve Magura Comey
+# Purpose: Create regression tree and evaluate its performance 
+# ==============================================================================
+# ==============================================================================
+
+
